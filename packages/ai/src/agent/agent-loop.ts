@@ -1,6 +1,7 @@
 import { streamSimple } from "../stream.js";
 import type { AssistantMessage, Context, Message, ToolResultMessage, UserMessage } from "../types.js";
 import { EventStream } from "../utils/event-stream.js";
+import { extractToolCallsFromThinking } from "../utils/parse-thinking-tools.js";
 import { validateToolArguments } from "../utils/validation.js";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentTool, AgentToolResult, QueuedMessage } from "./types.js";
 
@@ -126,8 +127,20 @@ async function runLoop(
 			return;
 		}
 
-		// Check for tool calls
+		// Check for tool calls (both explicit toolCall blocks and embedded in thinking)
 		const toolCalls = message.content.filter((c) => c.type === "toolCall");
+		const embeddedToolCalls = extractToolCallsFromThinking(message.content);
+
+		// If we found tool calls in thinking blocks, add them to the message
+		if (embeddedToolCalls.length > 0) {
+			message.content.push(...embeddedToolCalls);
+			toolCalls.push(...embeddedToolCalls);
+			// Update stopReason to toolUse so the loop continues
+			if (message.stopReason === "stop") {
+				message.stopReason = "toolUse";
+			}
+		}
+
 		hasMoreToolCalls = toolCalls.length > 0;
 
 		const toolResults: ToolResultMessage[] = [];
