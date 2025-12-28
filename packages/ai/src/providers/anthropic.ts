@@ -29,6 +29,53 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import { transformMessages } from "./transorm-messages.js";
 
 /**
+ * Parse tool calls embedded in thinking blocks from z.ai
+ * Format: <tool_call>tool_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
+ */
+function parseToolCallsFromThinking(thinking: string): ToolCall[] {
+	const toolCalls: ToolCall[] = [];
+
+	const regex =
+		/<tool_call>([\s\S]*?)((?:<arg_key>[\s\S]*?<\/arg_key><arg_value>[\s\S]*?<\/arg_value>)+)<\/tool_call>/g;
+
+	for (const match of thinking.matchAll(regex)) {
+		const toolName = match[1].trim();
+		const argsString = match[2];
+		const arguments_: Record<string, any> = {};
+
+		const argRegex = /<arg_key>([\s\S]*?)<\/arg_key><arg_value>([\s\S]*?)<\/arg_value>/g;
+
+		for (const argMatch of argsString.matchAll(argRegex)) {
+			const key = argMatch[1].trim();
+			const value = argMatch[2];
+			if (key) {
+				arguments_[key] = value;
+			}
+		}
+
+		// JSON parsing logic for complex types
+		for (const [key, value] of Object.entries(arguments_)) {
+			try {
+				if (typeof value === "string" && (value.startsWith("{") || value.startsWith("["))) {
+					arguments_[key] = JSON.parse(value);
+				}
+			} catch {
+				// Fallback to raw string
+			}
+		}
+
+		toolCalls.push({
+			type: "toolCall",
+			id: `tool_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
+			name: toolName,
+			arguments: arguments_,
+		});
+	}
+
+	return toolCalls;
+}
+
+/**
  * Convert content blocks to Anthropic API format
  */
 function convertContentBlocks(content: (TextContent | ImageContent)[]):
@@ -262,6 +309,20 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
 				throw new Error("An unkown error ocurred");
+			}
+
+			// Parse any tool calls embedded in thinking blocks (z.ai format)
+			for (let i = output.content.length - 1; i >= 0; i--) {
+				const block = output.content[i];
+				if (block.type === "thinking") {
+					const toolCalls = parseToolCallsFromThinking(block.thinking);
+					if (toolCalls.length > 0) {
+						// Insert tool calls after the thinking block
+						output.content.splice(i + 1, 0, ...toolCalls);
+						// Update stop reason to toolUse since we have tool calls
+						output.stopReason = "toolUse";
+					}
+				}
 			}
 
 			stream.push({ type: "done", reason: output.stopReason, message: output });
