@@ -32,9 +32,8 @@ import { transformMessages } from "./transorm-messages.js";
  * Parse tool calls embedded in thinking blocks from z.ai
  * Format: <tool_call>tool_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
  */
-function parseToolCallsFromThinking(thinking: string): ToolCall[] {
+function parseToolCallsFromThinking(thinking: string): { toolCalls: ToolCall[]; cleanedThinking: string } {
 	const toolCalls: ToolCall[] = [];
-
 	const regex =
 		/<tool_call>([\s\S]*?)((?:<arg_key>[\s\S]*?<\/arg_key><arg_value>[\s\S]*?<\/arg_value>)+)<\/tool_call>/g;
 
@@ -53,14 +52,13 @@ function parseToolCallsFromThinking(thinking: string): ToolCall[] {
 			}
 		}
 
-		// JSON parsing logic for complex types
 		for (const [key, value] of Object.entries(arguments_)) {
 			try {
 				if (typeof value === "string" && (value.startsWith("{") || value.startsWith("["))) {
 					arguments_[key] = JSON.parse(value);
 				}
 			} catch {
-				// Fallback to raw string
+				// Keep as string
 			}
 		}
 
@@ -72,7 +70,10 @@ function parseToolCallsFromThinking(thinking: string): ToolCall[] {
 		});
 	}
 
-	return toolCalls;
+	// Remove all matched tool_call XML blocks and trim the resulting text
+	const cleanedThinking = thinking.replace(regex, "").trim();
+
+	return { toolCalls, cleanedThinking };
 }
 
 /**
@@ -315,11 +316,16 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 			for (let i = output.content.length - 1; i >= 0; i--) {
 				const block = output.content[i];
 				if (block.type === "thinking") {
-					const toolCalls = parseToolCallsFromThinking(block.thinking);
+					const { toolCalls, cleanedThinking } = parseToolCallsFromThinking(block.thinking);
+
 					if (toolCalls.length > 0) {
-						// Insert tool calls after the thinking block
+						// 1. Update the original block to remove the XML
+						block.thinking = cleanedThinking;
+
+						// 2. Insert the parsed tool calls after the thinking block
 						output.content.splice(i + 1, 0, ...toolCalls);
-						// Update stop reason to toolUse since we have tool calls
+
+						// 3. Update stop reason to toolUse
 						output.stopReason = "toolUse";
 					}
 				}
